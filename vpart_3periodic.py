@@ -90,10 +90,14 @@ u['g'][1] += 0.1 * np.sin(2*np.pi*x/Lx) * np.exp(-(z-0.5)**2/0.01)
 u['g'][1] += 0.1 * np.sin(2*np.pi*x/Lx) * np.exp(-(z+0.5)**2/0.01)
 
 # Analysis
-snapshots = solver.evaluator.add_file_handler('snapshots', sim_dt=0.1, max_writes=10)
-snapshots.add_task(s, name='tracer')
-snapshots.add_task(p, name='pressure')
-snapshots.add_task(d3.curl(u), name='vorticity')
+# snapshots = solver.evaluator.add_file_handler('snapshots', sim_dt=0.1, max_writes=10)
+# snapshots.add_task(s, name='tracer')
+# snapshots.add_task(p, name='pressure')
+# snapshots.add_task(d3.curl(u), name='vorticity')
+
+checkpoints = solver.evaluator.add_file_handler('checkpoints', sim_dt=5, max_writes=1, mode='overwrite')
+checkpoints.add_tasks(solver.state)
+
 
 # CFL
 CFL = d3.CFL(solver, initial_dt=max_timestep, cadence=10, safety=0.2, threshold=0.1,
