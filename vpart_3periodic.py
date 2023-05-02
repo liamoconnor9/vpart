@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 
 # Parameters
-Lx, Ly, Lz = 1, 1, 1
+Lx, Ly, Lz = 15, 15, 15
 Nx, Ny, Nz = 32, 32, 32
-Reynolds = 5e4
+Reynolds = 10
 Schmidt = 1
 dealias = 3/2
 stop_sim_time = 20
@@ -41,30 +41,37 @@ coords = d3.CartesianCoordinates('x', 'y', 'z')
 dist = d3.Distributor(coords, dtype=dtype)
 xbasis = d3.RealFourier(coords['x'], size=Nx, bounds=(0, Lx), dealias=dealias)
 ybasis = d3.RealFourier(coords['y'], size=Ny, bounds=(0, Ly), dealias=dealias)
-zbasis = d3.RealFourier(coords['z'], size=Nz, bounds=(-Lz/2, Lz/2), dealias=dealias)
+zbasis = d3.RealFourier(coords['z'], size=Nz, bounds=(0, Lz), dealias=dealias)
 bases = (xbasis, ybasis, zbasis)
 
 # Fields
 p = dist.Field(name='p', bases=bases)
 s = dist.Field(name='s', bases=bases)
 u = dist.VectorField(coords, name='u', bases=bases)
+Us = dist.VectorField(coords, name='Us', bases=bases)
 tau_p = dist.Field(name='tau_p')
 
 # Substitutions
 nu = 1 / Reynolds
+vareps = 0.02
+omega = 1
 D = nu / Schmidt
 x, y, z = dist.local_grids(xbasis, ybasis, zbasis)
 ex, ey, ez = coords.unit_vector_fields(dist)
 
 phi = dist.Field(name='phi', bases=bases)
 phi['g'] = 0.0
-r = np.sqrt(x**2 + y**2 + z**2)
+r = np.sqrt((x - Lx/2)**2 + (y - Ly/2)**2 + (z - Lz/2)**2)
 phi['g'] = np.exp(-r**2 / 0.2)
+
+Us['g'][0] = -omega*y
+Us['g'][1] = omega*x
+Us['g'][2] = 0.0
 
 
 # Problem
 problem = d3.IVP([u, s, p, tau_p], namespace=locals())
-problem.add_equation("dt(u) + grad(p) - nu*lap(u) = - u@grad(u)")
+problem.add_equation("dt(u) + grad(p) - nu*lap(u) = -phi/vareps*(u - Us) - u@grad(u)")
 problem.add_equation("dt(s) - D*lap(s) = - u@grad(s)")
 problem.add_equation("div(u) + tau_p = 0")
 problem.add_equation("integ(p) = 0") # Pressure gauge
