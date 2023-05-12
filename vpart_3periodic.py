@@ -53,8 +53,10 @@ bases = (xbasis, ybasis, zbasis)
 p = dist.Field(name='p', bases=bases)
 #s = dist.Field(name='s', bases=bases)
 u = dist.VectorField(coords, name='u', bases=bases)
+ut = dist.VectorField(coords, name='ut', bases=bases)
 Us = dist.VectorField(coords, name='Us', bases=bases)
 tau_p = dist.Field(name='tau_p')
+F = dist.VectorField(coords, name='F')
 
 # Substitutions
 nu = 1 / Reynolds
@@ -77,10 +79,12 @@ Us['g'][2] = 0.0
 
 # Problem -Do we need the 2nd and 4th equation/s de we need tracer particles, what is last line
 #problem = d3.IVP([u, s, p, tau_p], namespace=locals())
-problem = d3.IVP([u, p, tau_p], namespace=locals())
-problem.add_equation("dt(u) + grad(p) - nu*lap(u) = -phi/vareps*(u - Us) - u@grad(u)")
+problem = d3.IVP([u, ut, p, tau_p, F], namespace=locals())
+problem.add_equation("ut + grad(p) - nu*lap(u) = -phi/vareps*(u - Us) - u@grad(u)")
+problem.add_equation("dt(u) - ut = 0")
 #problem.add_equation("dt(s) - D*lap(s) = - u@grad(s)")
 problem.add_equation("div(u) + tau_p = 0")
+problem.add_equation("F  = integ(phi*(ut + (u - Us)/vareps + u@grad(u)))")
 problem.add_equation("integ(p) = 0") # Pressure gauge
 
 # Solver
@@ -89,7 +93,10 @@ solver.stop_sim_time = stop_sim_time
 
 # Initial conditions
 #Set initial velocity to particle speed in particle and zeros elsewhere
-u['g'] = phi*Us
+# u.change_scales(1)
+# Us.change_scales(1)
+# phi.change_scales(1)
+u['c'] = (phi*Us).evaluate()['c'].copy()
 # Background shear
 #u['g'][0] = phi*Us
 #1/2 + 1/2 * (np.tanh((z-0.5)/0.1) - np.tanh((z+0.5)/0.1))
@@ -101,9 +108,7 @@ u['g'] = phi*Us
 
 # Analysis
 # snapshots = solver.evaluator.add_file_handler('snapshots', sim_dt=0.1, max_writes=10)
-# snapshots.add_task(s, name='tracer')
-# snapshots.add_task(p, name='pressure')
-# snapshots.add_task(d3.curl(u), name='vorticity')
+# snapshots.add_tasks(F, name='Force')
 
 checkpoints = solver.evaluator.add_file_handler('checkpoints', sim_dt=5, max_writes=1, mode='overwrite')
 checkpoints.add_tasks(solver.state)
@@ -128,7 +133,7 @@ try:
         if (solver.iteration-1) % 10 == 0:
             max_w = np.sqrt(flow.max('w2'))
             max_u = np.sqrt(flow.max('u2'))
-            logger.info('Iteration=%i, Time=%e, dt=%e, max(w)=%f, max(u2)=%f' %(solver.iteration, solver.sim_time, timestep, max_w, max_u))
+            logger.info('Iteration=%i, Time=%e, dt=%e, max(w)=%f, max(u2)=%f' %(solver.iteration, solver.sim_time, timestep, max_w, max_u) + ', F = {}'.format(F['g']))
 except:
     logger.error('Exception raised, triggering end of main loop.')
     raise
