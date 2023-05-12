@@ -1,22 +1,27 @@
 """
-Dedalus script simulating a 2D periodic incompressible shear flow with a passive
-tracer field for visualization. This script demonstrates solving a 2D periodic
-initial value problem. It can be ran serially or in parallel, and uses the
+Based off code from https://dedalus-project.readthedocs.io/en/latest/pages/examples/ivp_2d_shear_flow.html
+
+Contributors:
+    Sho Kawakami
+    Liam O'Connor
+
+Dedalus script simulating a 3D periodic domain contating spherical particles 
+under given velocity. This script solves a 3D Navier Stokes Equation.
+It can be ran serially or in parallel, and uses the
 built-in analysis framework to save data snapshots to HDF5 files. The
 `plot_snapshots.py` script can be used to produce plots from the saved data.
 The simulation should take about 10 cpu-minutes to run.
 
-The initial flow is in the x-direction and depends only on z. The problem is
-non-dimensionalized usign the shear-layer spacing and velocity jump, so the
-resulting viscosity and tracer diffusivity are related to the Reynolds and
-Schmidt numbers as:
+The inputs are:
 
-    nu = 1 / Reynolds
-    D = nu / Schmidt
+    Reynolds - Reynold number
+    eta - penalty parameter
+
+The particle(s) are given fixed rotational velocity
 
 To run and plot using e.g. 4 processes:
-    $ mpiexec -n 4 python3 shear_flow.py
-    $ mpiexec -n 4 python3 plot_snapshots.py snapshots/*.h5
+    $ mpiexec -n 4 python3 vpart_3periodic.py
+    $ mpiexec -n 4 python3 vpart_3periodic.py snapshots/*.h5
 """
 
 import numpy as np
@@ -31,7 +36,7 @@ Nx, Ny, Nz = 32, 32, 32
 Reynolds = 10
 Schmidt = 1
 dealias = 3/2
-stop_sim_time = 20
+stop_sim_time = 3
 timestepper = d3.RK222
 max_timestep = 1e-2
 dtype = np.float64
@@ -46,7 +51,7 @@ bases = (xbasis, ybasis, zbasis)
 
 # Fields
 p = dist.Field(name='p', bases=bases)
-s = dist.Field(name='s', bases=bases)
+#s = dist.Field(name='s', bases=bases)
 u = dist.VectorField(coords, name='u', bases=bases)
 Us = dist.VectorField(coords, name='Us', bases=bases)
 tau_p = dist.Field(name='tau_p')
@@ -54,6 +59,7 @@ tau_p = dist.Field(name='tau_p')
 # Substitutions
 nu = 1 / Reynolds
 vareps = 0.02
+vardel = 2.64822828*np.sqrt(vareps/Reynolds)
 omega = 1
 D = nu / Schmidt
 x, y, z = dist.local_grids(xbasis, ybasis, zbasis)
@@ -62,17 +68,18 @@ ex, ey, ez = coords.unit_vector_fields(dist)
 phi = dist.Field(name='phi', bases=bases)
 phi['g'] = 0.0
 r = np.sqrt((x - Lx/2)**2 + (y - Ly/2)**2 + (z - Lz/2)**2)
-phi['g'] = np.exp(-r**2 / 0.2)
+phi['g'] = .5*(1-np.tanh(2*(r-1)/vardel))
 
-Us['g'][0] = -omega*y
-Us['g'][1] = omega*x
+Us['g'][0] = -omega*(y-Ly/2)
+Us['g'][1] = omega*(x-Lx/2)
 Us['g'][2] = 0.0
 
 
-# Problem
-problem = d3.IVP([u, s, p, tau_p], namespace=locals())
+# Problem -Do we need the 2nd and 4th equation/s de we need tracer particles, what is last line
+#problem = d3.IVP([u, s, p, tau_p], namespace=locals())
+problem = d3.IVP([u, p, tau_p], namespace=locals())
 problem.add_equation("dt(u) + grad(p) - nu*lap(u) = -phi/vareps*(u - Us) - u@grad(u)")
-problem.add_equation("dt(s) - D*lap(s) = - u@grad(s)")
+#problem.add_equation("dt(s) - D*lap(s) = - u@grad(s)")
 problem.add_equation("div(u) + tau_p = 0")
 problem.add_equation("integ(p) = 0") # Pressure gauge
 
@@ -81,13 +88,16 @@ solver = problem.build_solver(timestepper)
 solver.stop_sim_time = stop_sim_time
 
 # Initial conditions
+#Set initial velocity to particle speed in particle and zeros elsewhere
+u['g'] = phi*Us
 # Background shear
-u['g'][0] = 1/2 + 1/2 * (np.tanh((z-0.5)/0.1) - np.tanh((z+0.5)/0.1))
-# Match tracer to shear
-s['g'] = u['g'][0]
+#u['g'][0] = phi*Us
+#1/2 + 1/2 * (np.tanh((z-0.5)/0.1) - np.tanh((z+0.5)/0.1))
+# Match tracer to shear - do I need tracers
+#s['g'] = u['g'][0]
 # Add small vertical velocity perturbations localized to the shear layers
-u['g'][1] += 0.1 * np.sin(2*np.pi*x/Lx) * np.exp(-(z-0.5)**2/0.01)
-u['g'][1] += 0.1 * np.sin(2*np.pi*x/Lx) * np.exp(-(z+0.5)**2/0.01)
+#u['g'][1] += 0.1 * np.sin(2*np.pi*x/Lx) * np.exp(-(z-0.5)**2/0.01)
+#u['g'][1] += 0.1 * np.sin(2*np.pi*x/Lx) * np.exp(-(z+0.5)**2/0.01)
 
 # Analysis
 # snapshots = solver.evaluator.add_file_handler('snapshots', sim_dt=0.1, max_writes=10)
