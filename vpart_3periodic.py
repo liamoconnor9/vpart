@@ -58,6 +58,7 @@ tau_p = dist.Field(name='tau_p')                                                
 
 #List of values indexed by particle
 particlelocations = []
+particlevelocities = []
 particleorientations = []
 forcelist = []
 torquelist=[]
@@ -66,6 +67,7 @@ Us = []
 philist = []
 for ii in range(Np):
     particlelocations.append(dist.VectorField(coords,name='pl'+str(ii)))
+    particlevelocities.append(dist.VectorField(coords,name='pv'+str(ii)))
     forcelist.append(dist.VectorField(coords,name='fl'+str(ii)))
     particleorientations.append(dist.VectorField(coords,name='po'+str(ii)))
     torquelist.append(dist.VectorField(coords,name='tl'+str(ii)))
@@ -97,7 +99,7 @@ for ii in range(Np):
 #problem.add_equation("ut + grad(p) - nu*lap(u) = -phi/vareps*(u - Us) - u@grad(u)")
 #problem.add_equation("F  = integ(phi*(ut + (u - Us)/vareps + u@grad(u)))")
 
-problem = d3.IVP([u, ut, p, tau_p]+forcelist, namespace=locals())
+problem = d3.IVP([u, ut, p, tau_p]+particlelocations+particlevelocities, namespace=locals())
 lhs = ut + d3.Gradient(p) - nu*d3.Laplacian(u)
 rhs = - u@d3.Gradient(u)
 
@@ -106,13 +108,15 @@ dt = lambda argy: TimeDerivative(argy)
 integ = lambda argy: d3.Integrate(d3.Integrate(d3.Integrate(argy,"y") ,"z") ,"x") 
 
 for ii in range(Np):
-    rhs-= philist[ii]/vareps*(u-Us) #Sum for inhomogeneous forcing term in equation
-    lhs2 = forcelist[ii]
-    rhs2 = integ(philist[ii]*(ut + (u - Us[ii])/vareps + u@d3.Gradient(u)))
-    lhs3 = dt(dt(particlelocations[ii])) - forcelist[ii]
-    rhs3 = 0
-    problem.add_equation((lhs2,rhs2))
+    rhs-= philist[ii]/vareps*(u-Us[ii]) #Sum for inhomogeneous forcing term in equation
+    forcelist[ii] = integ(philist[ii]*(ut + (u - Us[ii])/vareps + u@d3.Gradient(u)))
+    lhs3 = dt(particlelocations[ii])
+    lhs4 = dt(particlevelocities[ii])
+    rhs3 = particlevelocities[ii]
+    rhs4 = forcelist[ii]
+    problem.add_equation((lhs4,rhs4))
     problem.add_equation((lhs3,rhs3))
+    
     #problem.add_equation("forcelist[ii] = integ(phi[ii]*(ut + (u - Us[ii])/vareps + u@grad(u)))")#Equation for force for each particle
     #problem.add_equation("dt(dt(particlelocations[ii])) - forcelist[ii]=0")#Equation to update position of each particle, #Mass is 1 for now, change later if needed
 
@@ -128,7 +132,8 @@ solver.stop_sim_time = stop_sim_time
 # Initial conditions - is no intiliazatin=0?
 for ii in range(Np):
     u += (philist[ii]*Us[ii])
-u['g'] = u.evaluate()['g'].copy()
+u = u.evaluate().copy()
+#u['g'] = u.evaluate()['g'].copy()
 #u['c'] = (phi*Us).evaluate()['c'].copy()
 
 #Set initial velocity to particle speed in particle and zeros elsewhere
