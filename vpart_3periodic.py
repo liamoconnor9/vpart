@@ -5,7 +5,7 @@ Contributors:
     Sho Kawakami
     Liam O'Connor
 
-Dedalus script simulating a 3D periodic domain contating spherical particles 
+Dedalus script simulating a 3D periodic domain containing spherical particles 
 under given velocity. This script solves a 3D Navier Stokes Equation.
 It can be ran serially or in parallel, and uses the
 built-in analysis framework to save data snapshots to HDF5 files. The
@@ -33,10 +33,11 @@ logger = logging.getLogger(__name__)
 # Parameters
 Lx, Ly, Lz = 15, 15, 15
 Nx, Ny, Nz = 32, 32, 32
+Np=1
 Reynolds = 10
 Schmidt = 1
 dealias = 3/2
-stop_sim_time = 3
+stop_sim_time = 1
 timestepper = d3.RK222
 max_timestep = 1e-2
 dtype = np.float64
@@ -50,62 +51,100 @@ zbasis = d3.RealFourier(coords['z'], size=Nz, bounds=(0, Lz), dealias=dealias)
 bases = (xbasis, ybasis, zbasis)
 
 # Fields
-p = dist.Field(name='p', bases=bases)
-#s = dist.Field(name='s', bases=bases)
-u = dist.VectorField(coords, name='u', bases=bases)
-ut = dist.VectorField(coords, name='ut', bases=bases)
-Us = dist.VectorField(coords, name='Us', bases=bases)
-tau_p = dist.Field(name='tau_p')
-F = dist.VectorField(coords, name='F')
+p = dist.Field(name='p', bases=bases)                                               #Pressure field
+u = dist.VectorField(coords, name='u', bases=bases)                                 #Fluid velocity field
+ut = dist.VectorField(coords, name='ut', bases=bases)                               #Flow time derivative field
+tau_p = dist.Field(name='tau_p')                                                    #Tau field for incompressibility condition
+
+#List of values indexed by particle
+particlelocations = []
+particleorientations = []
+forcelist = []
+torquelist=[]
+omegalist = []
+Us = []
+philist = []
+for ii in range(Np):
+    particlelocations.append(dist.VectorField(coords,name='pl'+str(ii)))
+    forcelist.append(dist.VectorField(coords,name='fl'+str(ii)))
+    particleorientations.append(dist.VectorField(coords,name='po'+str(ii)))
+    torquelist.append(dist.VectorField(coords,name='tl'+str(ii)))
+    omegalist.append(dist.Field(name='ol'+str(ii)))
+    Us.append(dist.VectorField(coords,name='Us'+str(ii),bases=bases))
+    philist.append(dist.Field(name='phi'+str(ii),bases=bases))
+
 
 # Substitutions
 nu = 1 / Reynolds
 vareps = 0.02
 vardel = 2.64822828*np.sqrt(vareps/Reynolds)
-omega = 1
 D = nu / Schmidt
 x, y, z = dist.local_grids(xbasis, ybasis, zbasis)
 ex, ey, ez = coords.unit_vector_fields(dist)
 
-phi = dist.Field(name='phi', bases=bases)
-phi['g'] = 0.0
-r = np.sqrt((x - Lx/2)**2 + (y - Ly/2)**2 + (z - Lz/2)**2)
-phi['g'] = .5*(1-np.tanh(2*(r-1)/vardel))
+#Mask function
+rvec = dist.VectorField(coords,name='rvec',bases=bases)
+rvec['g'][0] = x
+rvec['g'][1] = y
+rvec['g'][2] = z
+for ii in range(Np):
+    r=np.sqrt((rvec-particlelocations[ii])@(rvec-particlelocations[ii]))
+    philist[ii] = .5*(1-np.tanh(2*(r-1)/vardel))
+    Us[ii] = omegalist[ii]*d3.CrossProduct(particleorientations[ii],rvec-particlelocations[ii])
 
-Us['g'][0] = -omega*(y-Ly/2)
-Us['g'][1] = omega*(x-Lx/2)
-Us['g'][2] = 0.0
 
+# Define problem/equations
+#problem.add_equation("ut + grad(p) - nu*lap(u) = -phi/vareps*(u - Us) - u@grad(u)")
+#problem.add_equation("F  = integ(phi*(ut + (u - Us)/vareps + u@grad(u)))")
 
-# Problem -Do we need the 2nd and 4th equation/s de we need tracer particles, what is last line
-#problem = d3.IVP([u, s, p, tau_p], namespace=locals())
-problem = d3.IVP([u, ut, p, tau_p, F], namespace=locals())
-problem.add_equation("ut + grad(p) - nu*lap(u) = -phi/vareps*(u - Us) - u@grad(u)")
-problem.add_equation("dt(u) - ut = 0")
-#problem.add_equation("dt(s) - D*lap(s) = - u@grad(s)")
-problem.add_equation("div(u) + tau_p = 0")
-problem.add_equation("F  = integ(phi*(ut + (u - Us)/vareps + u@grad(u)))")
+problem = d3.IVP([u, ut, p, tau_p]+forcelist, namespace=locals())
+lhs = ut + d3.Gradient(p) - nu*d3.Laplacian(u)
+rhs = - u@d3.Gradient(u)
+
+from dedalus.core.operators import TimeDerivative
+dt = lambda argy: TimeDerivative(argy)
+integ = lambda argy: d3.Integrate(d3.Integrate(d3.Integrate(argy,"y") ,"z") ,"x") 
+
+for ii in range(Np):
+    rhs-= philist[ii]/vareps*(u-Us) #Sum for inhomogeneous forcing term in equation
+    lhs2 = forcelist[ii]
+    rhs2 = integ(philist[ii]*(ut + (u - Us[ii])/vareps + u@d3.Gradient(u)))
+    lhs3 = dt(dt(particlelocations[ii])) - forcelist[ii]
+    rhs3 = 0
+    problem.add_equation((lhs2,rhs2))
+    problem.add_equation((lhs3,rhs3))
+    #problem.add_equation("forcelist[ii] = integ(phi[ii]*(ut + (u - Us[ii])/vareps + u@grad(u)))")#Equation for force for each particle
+    #problem.add_equation("dt(dt(particlelocations[ii])) - forcelist[ii]=0")#Equation to update position of each particle, #Mass is 1 for now, change later if needed
+
+problem.add_equation((lhs,rhs)) #Navier-Stokes equation
+problem.add_equation("dt(u) - ut = 0") #Time step
+problem.add_equation("div(u) + tau_p = 0") #Pressure/incompressibility condition
 problem.add_equation("integ(p) = 0") # Pressure gauge
 
 # Solver
 solver = problem.build_solver(timestepper)
 solver.stop_sim_time = stop_sim_time
 
-# Initial conditions
+# Initial conditions - is no intiliazatin=0?
+for ii in range(Np):
+    u += (philist[ii]*Us[ii])
+u['g'] = u.evaluate()['g'].copy()
+#u['c'] = (phi*Us).evaluate()['c'].copy()
+
 #Set initial velocity to particle speed in particle and zeros elsewhere
 # u.change_scales(1)
 # Us.change_scales(1)
 # phi.change_scales(1)
-u['c'] = (phi*Us).evaluate()['c'].copy()
+
 # Background shear
 #u['g'][0] = phi*Us
 #1/2 + 1/2 * (np.tanh((z-0.5)/0.1) - np.tanh((z+0.5)/0.1))
 # Match tracer to shear - do I need tracers
 #s['g'] = u['g'][0]
+
 # Add small vertical velocity perturbations localized to the shear layers
 #u['g'][1] += 0.1 * np.sin(2*np.pi*x/Lx) * np.exp(-(z-0.5)**2/0.01)
 #u['g'][1] += 0.1 * np.sin(2*np.pi*x/Lx) * np.exp(-(z+0.5)**2/0.01)
-
 # Analysis
 # snapshots = solver.evaluator.add_file_handler('snapshots', sim_dt=0.1, max_writes=10)
 # snapshots.add_tasks(F, name='Force')
@@ -133,7 +172,7 @@ try:
         if (solver.iteration-1) % 10 == 0:
             max_w = np.sqrt(flow.max('w2'))
             max_u = np.sqrt(flow.max('u2'))
-            logger.info('Iteration=%i, Time=%e, dt=%e, max(w)=%f, max(u2)=%f' %(solver.iteration, solver.sim_time, timestep, max_w, max_u) + ', F = {}'.format(F['g']))
+            logger.info('Iteration=%i, Time=%e, dt=%e, max(w)=%f, max(u2)=%f' %(solver.iteration, solver.sim_time, timestep, max_w, max_u))
 except:
     logger.error('Exception raised, triggering end of main loop.')
     raise
