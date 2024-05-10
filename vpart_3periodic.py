@@ -87,6 +87,13 @@ for ii in range(Np):
     Us.append(dist.VectorField(coords,name='Us'+str(ii),bases=bases))
     philist.append(dist.Field(name='phi'+str(ii),bases=bases))
 
+    particleorientations[ii]['g'][0]=1
+    particleorientations[ii]['g'][1]=0
+    particleorientations[ii]['g'][2]=0
+    particlelocations[ii]['g'][0] = ii+Lx/2
+    particlelocations[ii]['g'][1] = Ly/2
+    particlelocations[ii]['g'][2] = Lz/2
+
 
 # Substitutions
 nu = 1 / Reynolds
@@ -112,12 +119,18 @@ if bounded:
     lift = lambda A: d3.Lift(A,lift_basis,-1)
     grad_u = d3.grad(u) + ez*lift(tau_u1)
 
+# Define time derivative and 3D integration
+from dedalus.core.operators import TimeDerivative
+dt = lambda argy: TimeDerivative(argy)
+integ = lambda argy: d3.Integrate(d3.Integrate(d3.Integrate(argy,"y") ,"z") ,"x") 
+
 
 #Define Equations/Problems
 if bounded:
-    problem = d3.IVP([u, ut, p, tau_p,tau_u1,tau_u2]+particlelocations+particlevelocities, namespace=locals())
+    problem = d3.IVP([u,ut, p, tau_p,tau_u1,tau_u2]+particlelocations+particlevelocities, namespace=locals())
+    #problem = d3.IVP([u,ut, p, tau_p,tau_u1,tau_u2]+particlevelocities, namespace=locals())
 else:
-    problem = d3.IVP([u, ut, p, tau_p]+particlelocations+particlevelocities, namespace=locals())
+    problem = d3.IVP([u,ut, p, tau_p]+particlelocations+particlevelocities, namespace=locals())
 
 #Navier Stokes Equation w/out 
 lhs = ut + d3.Gradient(p)
@@ -127,10 +140,6 @@ if bounded:
 else:
     lhs-=nu*d3.Laplacian(u)
 
-# Define time derivative and 3D integration
-from dedalus.core.operators import TimeDerivative
-dt = lambda argy: TimeDerivative(argy)
-integ = lambda argy: d3.Integrate(d3.Integrate(d3.Integrate(argy,"y") ,"z") ,"x") 
 
 for ii in range(Np):
     rhs-= philist[ii]/vareps*(u-Us[ii]) #Sum for inhomogeneous forcing term in equation
@@ -138,13 +147,16 @@ for ii in range(Np):
     lhs4 = dt(particlevelocities[ii])
     rhs4 = forcelist[ii] #Mass is currently set to 1 can add ti if neccesary
     problem.add_equation((lhs4,rhs4)) #Evolution equation for velocity of each particle
-    lhs3 = dt(particlelocations[ii])
-    rhs3 = particlevelocities[ii]
+    lhs3 = dt(particlelocations[ii])-particlevelocities[ii]
+    rhs3 = 0
     problem.add_equation((lhs3,rhs3)) #Evolution equation for location of each particle
 
 problem.add_equation((lhs,rhs)) #Navier-Stokes equation
 problem.add_equation("dt(u) - ut = 0") #Time step
-problem.add_equation("div(u) + tau_p = 0") #Pressure/incompressibility condition
+if bounded:
+    problem.add_equation("trace(grad_u) + tau_p = 0") #Pressure/incompressibility condition
+else:
+    problem.add_equation("div(u) + tau_p = 0") #Pressure/incompressibility condition
 problem.add_equation("integ(p) = 0") # Pressure gauge
 if bounded:
     problem.add_equation("u(z=0) = 0")
@@ -187,8 +199,9 @@ try:
             max_w = np.sqrt(flow.max('w2'))
             max_u= np.sqrt(flow.max('u2'))
             logger.info('Iteration=%i, Time=%e, dt=%e, max(w)=%f, max(u2)=%f' %(solver.iteration, solver.sim_time, timestep, max_w, max_u))
-except:
+except Exception as E:
     logger.error('Exception raised, triggering end of main loop.')
+    print(E)
     raise
 finally:
     solver.log_stats()

@@ -4,7 +4,7 @@
 #SBATCH --job-name="IBM - Rotor Simulations"
 #SBATCH -n 4
 #SBATCH -t 00:02:00
-#SBATCH --mem=1GB
+#SBATCH --mem=4GB
 #SBATCH --mail-type=ALL ## you can receive e-mail alerts from SLURM when your job begins and when your job finishes (completed, failed, etc)
 #SBATCH --mail-user=ShoKawakami2025@u.northwestern.edu  ## your email
 
