@@ -5,9 +5,9 @@ Contributors:
     Sho Kawakami
     Liam O'Connor
 
-Dedalus script simulating containing spherical particles rotating under given angular velocity either in a 
-3D periodic domain or a 3D domain between two parallel no-slip walls. 
-This script solves a 3D Navier Stokes Equation. It can be ran serially or in parallel, and uses the
+Dedalus script simulating a 3D periodic domain containing spherical particles 
+under given velocity. This script solves a 3D Navier Stokes Equation.
+It can be ran serially or in parallel, and uses the
 built-in analysis framework to save data snapshots to HDF5 files. The
 `plot_snapshots.py` script can be used to produce plots from the saved data.
 The simulation should take about 10 cpu-minutes to run.
@@ -16,9 +16,6 @@ The inputs are:
 
     Reynolds - Reynold number
     eta - penalty parameter
-    Lx, Ly, Lz - Size of domain, Lz for distance between wall(if option is on)
-    Nx, Ny, Nz - Spatial discretization
-    bounded - True: with wall, False: 3D periodic
 
 The particle(s) are given fixed rotational velocity
 
@@ -30,12 +27,10 @@ To run and plot using e.g. 4 processes:
 import numpy as np
 import dedalus.public as d3
 import logging
-from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
 # Parameters
-bounded = True
 Lx, Ly, Lz = 15, 15, 15
 Nx, Ny, Nz = 32, 32, 32
 Np=1
@@ -46,17 +41,13 @@ stop_sim_time = 1
 timestepper = d3.RK222
 max_timestep = 1e-2
 dtype = np.float64
-Nframes = 100
 
 # Bases
 coords = d3.CartesianCoordinates('x', 'y', 'z')
 dist = d3.Distributor(coords, dtype=dtype)
 xbasis = d3.RealFourier(coords['x'], size=Nx, bounds=(0, Lx), dealias=dealias)
 ybasis = d3.RealFourier(coords['y'], size=Ny, bounds=(0, Ly), dealias=dealias)
-if bounded:
-    zbasis = d3.ChebyshevT(coords['z'], size=Nz, bounds=(0, Lz), dealias=dealias)
-else:
-    zbasis = d3.RealFourier(coords['z'], size=Nz, bounds=(0, Lz), dealias=dealias)
+zbasis = d3.RealFourier(coords['z'], size=Nz, bounds=(0, Lz), dealias=dealias)
 bases = (xbasis, ybasis, zbasis)
 
 # Fields
@@ -64,11 +55,8 @@ p = dist.Field(name='p', bases=bases)                                           
 u = dist.VectorField(coords, name='u', bases=bases)                                 #Fluid velocity field
 ut = dist.VectorField(coords, name='ut', bases=bases)                               #Flow time derivative field
 tau_p = dist.Field(name='tau_p')                                                    #Tau field for incompressibility condition
-if bounded:
-    tau_u1 = dist.VectorField(coords,name='tau_u1',bases=(xbasis,ybasis))               #Tau field for BC condition
-    tau_u2 = dist.VectorField(coords,name='tau_u2',bases=(xbasis,ybasis))               #Tau field for BC condition
 
-#List of vectors, fields, vector fields indexed by particle
+#List of values indexed by particle
 particlelocations = []
 particlevelocities = []
 particleorientations = []
@@ -106,28 +94,17 @@ for ii in range(Np):
     philist[ii] = .5*(1-np.tanh(2*(r-1)/vardel))
     Us[ii] = omegalist[ii]*d3.CrossProduct(particleorientations[ii],rvec-particlelocations[ii])
 
-#Extra definitions for no-slip boundary
-if bounded:
-    lift_basis = zbasis.derivative_basis(1)
-    lift = lambda A: d3.Lift(A,lift_basis,-1)
-    grad_u = d3.grad(u) + ez*lift(tau_u1)
 
 
-#Define Equations/Problems
-if bounded:
-    problem = d3.IVP([u, ut, p, tau_p,tau_u1,tau_u2]+particlelocations+particlevelocities, namespace=locals())
-else:
-    problem = d3.IVP([u, ut, p, tau_p]+particlelocations+particlevelocities, namespace=locals())
 
-#Navier Stokes Equation w/out 
-lhs = ut + d3.Gradient(p)
+# Define problem/equations
+#problem.add_equation("ut + grad(p) - nu*lap(u) = -phi/vareps*(u - Us) - u@grad(u)")
+#problem.add_equation("F  = integ(phi*(ut + (u - Us)/vareps + u@grad(u)))")
+
+problem = d3.IVP([u, ut, p, tau_p]+particlelocations+particlevelocities, namespace=locals())
+lhs = ut + d3.Gradient(p) - nu*d3.Laplacian(u)
 rhs = - u@d3.Gradient(u)
-if bounded:
-    lhs+=lift(tau_u2)-nu*d3.Divergence(grad_u)
-else:
-    lhs-=nu*d3.Laplacian(u)
 
-# Define time derivative and 3D integration
 from dedalus.core.operators import TimeDerivative
 dt = lambda argy: TimeDerivative(argy)
 integ = lambda argy: d3.Integrate(d3.Integrate(d3.Integrate(argy,"y") ,"z") ,"x") 
@@ -135,37 +112,60 @@ integ = lambda argy: d3.Integrate(d3.Integrate(d3.Integrate(argy,"y") ,"z") ,"x"
 for ii in range(Np):
     rhs-= philist[ii]/vareps*(u-Us[ii]) #Sum for inhomogeneous forcing term in equation
     forcelist[ii] = integ(philist[ii]*(ut + (u - Us[ii])/vareps + u@d3.Gradient(u)))
-    lhs4 = dt(particlevelocities[ii])
-    rhs4 = forcelist[ii] #Mass is currently set to 1 can add ti if neccesary
-    problem.add_equation((lhs4,rhs4)) #Evolution equation for velocity of each particle
     lhs3 = dt(particlelocations[ii])
+    lhs4 = dt(particlevelocities[ii])
     rhs3 = particlevelocities[ii]
-    problem.add_equation((lhs3,rhs3)) #Evolution equation for location of each particle
+    rhs4 = forcelist[ii] #Mass is currently set to 1 can add ti if neccesary
+    problem.add_equation((lhs4,rhs4))
+    problem.add_equation((lhs3,rhs3))
+
+    #torquelist[ii] = integ(d3.CrossProduct(rvec-particlelocations[ii],philist[ii]*(ut + (u - Us[ii])/vareps + u@d3.Gradient(u))))
+
+    
+    
+    #problem.add_equation("forcelist[ii] = integ(phi[ii]*(ut + (u - Us[ii])/vareps + u@grad(u)))")#Equation for force for each particle
+    #problem.add_equation("dt(dt(particlelocations[ii])) - forcelist[ii]=0")#Equation to update position of each particle, #Mass is 1 for now, change later if needed
+
+
+
 
 problem.add_equation((lhs,rhs)) #Navier-Stokes equation
 problem.add_equation("dt(u) - ut = 0") #Time step
 problem.add_equation("div(u) + tau_p = 0") #Pressure/incompressibility condition
 problem.add_equation("integ(p) = 0") # Pressure gauge
-if bounded:
-    problem.add_equation("u(z=0) = 0")
-    problem.add_equation("u(z=Lz) = 0")
 
 # Solver
 solver = problem.build_solver(timestepper)
 solver.stop_sim_time = stop_sim_time
 
-# Initial conditions
+# Initial conditions - is no intiliazatin=0?
 for ii in range(Np):
     u += (philist[ii]*Us[ii])
-    u = u.evaluate().copy()
+u = u.evaluate().copy()
+#u['g'] = u.evaluate()['g'].copy()
+#u['c'] = (phi*Us).evaluate()['c'].copy()
 
-# Save files and name
-name = datetime.today().strftime('%Y-%m-%d_%H-%M')
-checkpoints = solver.evaluator.add_file_handler('checkpoints_IBHQ_'+name, sim_dt=stop_sim_time, max_writes=1, mode='overwrite')
-checkpoints.add_tasks(solver.state,layout='g')
-snapshots = solver.evaluator.add_file_handler('snapshots_IBHQ_'+name,sim_dt =stop_sim_time/Nframes,max_writes = Nframes+1,mode='overwrite')
-for force in forcelist:
-    snapshots.add_task(force,name = force.name)
+#Set initial velocity to particle speed in particle and zeros elsewhere
+# u.change_scales(1)
+# Us.change_scales(1)
+# phi.change_scales(1)
+
+# Background shear
+#u['g'][0] = phi*Us
+#1/2 + 1/2 * (np.tanh((z-0.5)/0.1) - np.tanh((z+0.5)/0.1))
+# Match tracer to shear - do I need tracers
+#s['g'] = u['g'][0]
+
+# Add small vertical velocity perturbations localized to the shear layers
+#u['g'][1] += 0.1 * np.sin(2*np.pi*x/Lx) * np.exp(-(z-0.5)**2/0.01)
+#u['g'][1] += 0.1 * np.sin(2*np.pi*x/Lx) * np.exp(-(z+0.5)**2/0.01)
+# Analysis
+# snapshots = solver.evaluator.add_file_handler('snapshots', sim_dt=0.1, max_writes=10)
+# snapshots.add_tasks(F, name='Force')
+
+checkpoints = solver.evaluator.add_file_handler('checkpoints', sim_dt=stop_sim_time, max_writes=1, mode='overwrite')
+checkpoints.add_tasks(solver.state)
+
 
 # CFL
 CFL = d3.CFL(solver, initial_dt=max_timestep, cadence=10, safety=0.2, threshold=0.1,
@@ -185,7 +185,7 @@ try:
         solver.step(timestep)
         if (solver.iteration-1) % 10 == 0:
             max_w = np.sqrt(flow.max('w2'))
-            max_u= np.sqrt(flow.max('u2'))
+            max_u = np.sqrt(flow.max('u2'))
             logger.info('Iteration=%i, Time=%e, dt=%e, max(w)=%f, max(u2)=%f' %(solver.iteration, solver.sim_time, timestep, max_w, max_u))
 except:
     logger.error('Exception raised, triggering end of main loop.')
