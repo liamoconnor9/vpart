@@ -35,14 +35,14 @@ logger = logging.getLogger(__name__)
 
 
 # Parameters
-bounded = True
-Lx, Ly, Lz = 15, 15, 15
-Nx, Ny, Nz = 32, 32, 32
+bounded = False
+Lx, Ly, Lz = 7, 7, 7
+Nx, Ny, Nz = 128, 128, 128
 Np=1
 Reynolds = 10
 Schmidt = 1
 dealias = 3/2
-stop_sim_time = 1
+stop_sim_time = 2
 timestepper = d3.RK222
 max_timestep = 1e-2
 dtype = np.float64
@@ -62,6 +62,7 @@ bases = (xbasis, ybasis, zbasis)
 # Fields
 p = dist.Field(name='p', bases=bases)                                               #Pressure field
 u = dist.VectorField(coords, name='u', bases=bases)                                 #Fluid velocity field
+ud = dist.VectorField(coords, name='ud', bases=bases)
 ut = dist.VectorField(coords, name='ut', bases=bases)                               #Flow time derivative field
 tau_p = dist.Field(name='tau_p')                                                    #Tau field for incompressibility condition
 if bounded:
@@ -93,11 +94,12 @@ for ii in range(Np):
     particlelocations[ii]['g'][0] = ii+Lx/2
     particlelocations[ii]['g'][1] = Ly/2
     particlelocations[ii]['g'][2] = Lz/2
+    omegalist[ii]['g'][0] = 1
 
 
 # Substitutions
 nu = 1 / Reynolds
-vareps = 0.02
+vareps = 0.1
 vardel = 2.64822828*np.sqrt(vareps/Reynolds)
 D = nu / Schmidt
 x, y, z = dist.local_grids(xbasis, ybasis, zbasis)
@@ -133,7 +135,7 @@ else:
     problem = d3.IVP([u,ut, p, tau_p]+particlelocations+particlevelocities, namespace=locals())
 
 #Navier Stokes Equation w/out 
-lhs = ut + d3.Gradient(p)
+lhs = dt(u) + d3.Gradient(p)
 rhs = - u@d3.Gradient(u)
 if bounded:
     lhs+=lift(tau_u2)-nu*d3.Divergence(grad_u)
@@ -168,16 +170,26 @@ solver.stop_sim_time = stop_sim_time
 
 # Initial conditions
 for ii in range(Np):
-    u += (philist[ii]*Us[ii])
-    u = u.evaluate().copy()
+    ud += (philist[ii]*Us[ii])
+u = ud.evaluate().copy()
 
 # Save files and name
 name = datetime.today().strftime('%Y-%m-%d_%H-%M')
-checkpoints = solver.evaluator.add_file_handler('checkpoints_IBHQ_'+name, sim_dt=stop_sim_time, max_writes=1, mode='overwrite')
+checkpoints = solver.evaluator.add_file_handler('checkpoints_IBHQ_'+name, sim_dt=stop_sim_time-max_timestep, max_writes=2, mode='overwrite')
 checkpoints.add_tasks(solver.state,layout='g')
+checkpoints.add_task(u, name = 'u2')
+checkpoints.add_task(philist[0], name = 'phi')
+checkpoints.add_task(Us[0], name = 'Usp')
+
 snapshots = solver.evaluator.add_file_handler('snapshots_IBHQ_'+name,sim_dt =stop_sim_time/Nframes,max_writes = Nframes+1,mode='overwrite')
 for force in forcelist:
     snapshots.add_task(force,name = force.name)
+for particleloc in particlelocations:
+    snapshots.add_task(particleloc,name = particleloc.name)
+for omeg in omegalist:
+    snapshots.add_task(omeg,name = omeg.name)
+for orientation in particleorientations:
+    snapshots.add_task(orientation,name = orientation.name)
 
 # CFL
 CFL = d3.CFL(solver, initial_dt=max_timestep, cadence=10, safety=0.2, threshold=0.1,
